@@ -120,6 +120,30 @@ OPS=SET,GET python3 test/bench/bench.py
 
 数组后端在小键空间下与 Hash/RBTree 同级，但键数增大时 QPS 显著下降——见下节。
 
+### 分配器对比（system vs jemalloc）
+
+`allocator` 配置项在启动时一次性锁定，全部 C++ 堆分配（`std::string`、各容器节点等）经重载的 `operator new` 汇入选定后端。`test/bench/compare_alloc.sh` 用仅 `allocator` 一行不同、持久化均关闭的两份配置，对同一组负载各跑一轮：
+
+```bash
+bash test/bench/compare_alloc.sh
+```
+
+同机一次测得（2 vCPU、Release、`CONNS=50 PIPELINE=16 DURATION=5`，QPS）：
+
+| 场景 | system | jemalloc | 差异 |
+|------|-------:|---------:|-----:|
+| Hash（`HSET/HGET`） | 249,664 | 247,469 | -0.9% |
+| RBTree（`RSET/RGET`） | 245,222 | 244,970 | ~0% |
+| 数组（`SET/GET`，k=1k） | 243,299 | 241,152 | -0.9% |
+| Hash 纯写、`VALUE_LEN=256` | 21,510 | 22,144 | +2.9% |
+
+**结论：在本项目当前架构下，两个分配器无可测差异，全部落在 ±3% 噪声内。** 这并非测错：
+
+- 瓶颈不在分配器。三种数据结构（O(1) hash、O(log n) rbtree、小数组）QPS 全挤在 ~245k，说明客户端事件循环 + loopback 网络先到顶，服务端 `malloc` 路径占比很小。
+- jemalloc 的主要收益来自**多线程 arena 分片**（降锁竞争）、长跑抗碎片、海量小对象分配。tinykv 是**单线程 Reactor**，没有多线程分配竞争，短时压测也跑不出碎片差异，jemalloc 的卖点几乎都没被触发。
+
+也就是说，jemalloc 的价值要在多线程服务、长跑抗碎片或更激进的小对象分配下才体现；当前单线程数据路径下选哪个对吞吐没有实质影响。
+
 ## 数组命名空间的性能特征
 
 数组后端（默认命名空间）基于 `std::vector`，SET/GET/DEL 都是 **O(n) 线性扫描**：键空间从 1k 增到 100k 时，QPS 从 ~132k 跌到 ~22k。它定位为“小数据、教学演示”。需要大键空间时应使用：
@@ -137,7 +161,7 @@ include/tinykv/   # 公开头文件
   aof.h  snapshot.h  connection.h  reactor.h  database.h  server.h
 src/              # 实现 + main.cpp
 test/             # 单元测试（CTest）
-test/bench/       # 压测脚本 bench.py
+test/bench/       # 压测脚本 bench.py、分配器对比 compare_alloc.sh
 cmake/jemalloc.cmake  # 从源码编译 jemalloc 的构建逻辑
 third_party/jemalloc  # jemalloc git submodule（仅源码）
 docs/design.md    # 设计文档
