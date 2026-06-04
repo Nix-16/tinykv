@@ -1,0 +1,15 @@
+# build artifacts
+/build/
+/bin/
+
+# persistence files generated at runtime
+appendonly.aof
+dump.kvs
+dump.kvs.tmp
+*.aof
+
+# editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
