@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(TinyKv LANGUAGES CXX)
+project(tinykv LANGUAGES CXX)
 
 # ---------------- 标准与默认构建类型 ----------------
 set(CMAKE_CXX_STANDARD 17)

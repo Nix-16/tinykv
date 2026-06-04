@@ -12,11 +12,10 @@ namespace tinykv {
 
 // 三套独立命名空间的统一存储接口。
 //
-// C 版用三组各自的 kvs_array_* / kvs_hash_* / kvs_rbtree_* 函数实现相同语义；
-// 这里抽象为一个接口，三种后端分别用 STL 容器实现，调用方（Database）只依赖
-// 接口，命令分发因而大幅简化。
+// 三种后端（数组 / 哈希 / 红黑树）分别用 STL 容器实现同一套语义，调用方
+// （Database）只依赖接口，命令分发因而大幅简化。
 //
-// 语义约定（与 C 版对齐）：
+// 语义约定：
 //   set    : upsert，存在则覆盖 value，恒成功。
 //   get    : 命中返回 value，未命中返回 std::nullopt。
 //   del    : 删除成功返回 true；key 不存在返回 false。

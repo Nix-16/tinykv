@@ -10,7 +10,7 @@
 
 namespace tinykv {
 
-// Append Only File：每条写命令以 RESP 数组追加，格式与 C 版/Redis 一致。
+// Append Only File：每条写命令以 RESP 数组追加，格式与 Redis 一致。
 //
 // fsync 策略：
 //   Always   每次追加后立即 fsync

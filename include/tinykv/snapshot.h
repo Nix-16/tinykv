@@ -6,7 +6,7 @@
 
 namespace tinykv {
 
-// 全量快照：与 C 版二进制格式完全一致，旧的 dump.kvs 可直接加载。
+// 全量快照：紧凑二进制格式，dump.kvs 可独立加载。
 //
 // 文件布局：
 //   header: magic[4]="KVS1", version(u32)=1,
@@ -20,7 +20,7 @@ public:
     Snapshot(IStore& array, IStore& hash, IStore& rbtree)
         : array_(array), hash_(hash), rbtree_(rbtree) {}
 
-    // 保存到 path。成功返回 0，失败返回负值（沿用 C 版错误码语义）。
+    // 保存到 path。成功返回 0，失败返回负值。
     int save(const std::string& path) const;
 
     // 从 path 加载。返回：

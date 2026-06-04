@@ -1,8 +1,8 @@
-# TinyKv
+# tinykv
 
 基于 C++17 实现的内存 KV 存储服务，使用 [RESP](https://redis.io/docs/reference/protocol-spec/) 协议与客户端通信，支持多种底层数据结构与持久化。
 
-本项目是对 C 版 [`kvstore`](../kvstore) 的 C++ 重构：在保持**线协议、AOF 格式、快照二进制格式完全兼容**的前提下，用面向对象与 STL 重写，简化命令分发、用 RAII 管理资源、用统一的 `IStore` 接口抽象三套命名空间。
+定位为单机内存 KV + 持久化：面向对象设计，用统一的 `IStore` 接口抽象三套命名空间，用 RAII 管理资源，命令分发简洁，分配器可插拔。
 
 ## 功能概览
 
@@ -43,7 +43,7 @@ cmake -S . -B build -DUSE_JEMALLOC=OFF && cmake --build build -j
 ./build/tinykv_server /path/to/kvs.conf
 ```
 
-服务默认监听 `0.0.0.0:6380`。配置文件格式与 C 版一致，可直接复用旧的 `kvs.conf`。
+服务默认监听 `0.0.0.0:6380`。
 
 ## 配置说明（kvs.conf）
 
@@ -74,9 +74,11 @@ cmake -S . -B build -DUSE_JEMALLOC=OFF && cmake --build build -j
 - **快照**：`SAVE` 将当前内存数据写入 `snapshot_file`，并重置 AOF，便于下次启动以快照为主
 - **启动顺序**：先加载快照，再回放 AOF
 - **优雅退出**：收到 SIGINT/SIGTERM 后停止事件循环，若启用快照则执行一次 SAVE，关闭前对 AOF 做 fsync 再退出
-- **兼容性**：快照文件头仍为 `KVS1` + version 1，KV 编码（klen/vlen/key/value）与 C 版一致；AOF 仍是 RESP 数组。两边的 `dump.kvs` / `appendonly.aof` 可互相加载。
+- **格式**：快照文件头为 `KVS1` + version 1，KV 编码为 `klen/vlen/key/value`；AOF 为 RESP 数组。
 
 ## 测试
+
+单元测试（CTest）：
 
 ```bash
 cmake --build build -j
@@ -85,17 +87,47 @@ cd build && ctest --output-on-failure
 
 覆盖：buffer 增长/压缩/fd 读、三种 store 的统一语义、RESP 解析与回包、快照/AOF 往返、Database 命令分发与命名空间隔离。
 
-集成压测可直接复用 C 版脚本（同一套协议）：
+## 压力测试
+
+`test/bench/bench.py` 是一个基于 asyncio 的 RESP 压测客户端，多连接 + pipeline 打满单线程服务端，统计 QPS 与延迟分位。
 
 ```bash
-HOST=127.0.0.1 PORT=6380 OPS=HSET,HGET CONNS=50 DURATION=5 \
-  python3 ../kvstore/test/intergration/bench_kvstore.py
+# 先启动服务
+./build/tinykv_server kvs.conf
+
+# Hash 命名空间，50 连接、跑 5 秒、读写各半
+OPS=HSET,HGET CONNS=50 DURATION=5 python3 test/bench/bench.py
+
+# RBTree 命名空间
+OPS=RSET,RGET python3 test/bench/bench.py
+
+# 默认（数组）命名空间
+OPS=SET,GET python3 test/bench/bench.py
 ```
 
-## 与 C 版的行为差异
+可调环境变量：`HOST`、`PORT`、`OPS`、`CONNS`（并发连接）、`DURATION`（秒）、`PIPELINE`（批深度）、`KEYSPACE`（key 空间）、`VALUE_LEN`、`READ_RATIO`（读比例）。
 
-- **数组命名空间不再有 1024 条上限**。C 版 `kvs_array` 固定容量 1024，超出即报错；TinyKv 的 `ArrayStore` 基于 `std::vector`，可无限增长。**代价**：数组后端的 SET/GET/DEL 仍是 O(n) 线性扫描，键数很大时会明显变慢。需要大键空间时应使用 Hash（`HSET`，O(1)）或 RBTree（`RSET`，O(log n)）命名空间——数组后端定位为“小数据、教学演示”。
-- 命令级行为（回复格式、命名空间隔离、DEL 返回值、PING/SAVE 语义）与 C 版保持一致。
+### 参考结果
+
+环境：2 vCPU 虚拟机、`-O2` Release、jemalloc 后端、`CONNS=50 PIPELINE=16 DURATION=5 VALUE_LEN=16`、读写各半。QPS 与延迟随机器、连接数、pipeline 深度变化，仅供横向对比。
+
+| 命名空间 | KEYSPACE | QPS | avg (ms) | p99 (ms) |
+|----------|---------:|----:|---------:|---------:|
+| Hash（`HSET/HGET`） | 100,000 | ~140k | 0.35 | 0.42 |
+| RBTree（`RSET/RGET`） | 100,000 | ~139k | 0.35 | 0.83 |
+| 数组（`SET/GET`） | 1,000 | ~132k | 0.37 | 0.58 |
+| 数组（`SET/GET`） | 100,000 | ~22k | 2.28 | 5.37 |
+
+数组后端在小键空间下与 Hash/RBTree 同级，但键数增大时 QPS 显著下降——见下节。
+
+## 数组命名空间的性能特征
+
+数组后端（默认命名空间）基于 `std::vector`，SET/GET/DEL 都是 **O(n) 线性扫描**：键空间从 1k 增到 100k 时，QPS 从 ~132k 跌到 ~22k。它定位为“小数据、教学演示”。需要大键空间时应使用：
+
+- **Hash**（`HSET`，O(1) 均摊）——通用首选
+- **RBTree**（`RSET`，O(log n)，且按字典序遍历）——需要有序时
+
+三套命名空间互相隔离，不共享 key。
 
 ## 项目结构
 
@@ -104,7 +136,8 @@ include/tinykv/   # 公开头文件
   buffer.h  resp.h  store.h  config.h  allocator.h
   aof.h  snapshot.h  connection.h  reactor.h  database.h  server.h
 src/              # 实现 + main.cpp
-test/             # 单元/集成测试（CTest）
+test/             # 单元测试（CTest）
+test/bench/       # 压测脚本 bench.py
 cmake/jemalloc.cmake  # 从源码编译 jemalloc 的构建逻辑
 third_party/jemalloc  # jemalloc git submodule（仅源码）
 docs/design.md    # 设计文档

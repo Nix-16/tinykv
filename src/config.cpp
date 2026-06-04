@@ -125,7 +125,7 @@ bool Config::load_file(const std::string& path, std::string* error) {
         } else if (key == "snapshot_file") {
             snapshot_file = val;
         }
-        // 未识别项：忽略，与 C 版行为一致。
+        // 未识别项：忽略。
     }
 
     return true;

@@ -19,7 +19,7 @@ enum class AofFsync {
     Everysec,
 };
 
-// 运行配置，对应 kvs.conf。字段命名与 C 版保持一致，确保旧配置文件可直接复用。
+// 运行配置，对应 kvs.conf。
 struct Config {
     std::string bind_ip = "127.0.0.1";
     int port = 6380;
